@@ -9,33 +9,46 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unpack project into repo
+      - name: Apply phase 2 files
         run: |
-          if [ ! -f app/build.gradle.kts ]; then
-          cat > settings.gradle.kts <<'STROID_EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories { google(); mavenCentral() }
-          }
-          rootProject.name = "stroid"
-          include(":app")
-          STROID_EOF
-          cat > build.gradle.kts <<'STROID_EOF'
-          plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-          }
-          STROID_EOF
+          if [ "$(cat .stroid-version 2>/dev/null)" != "2" ]; then
           cat > gradle.properties <<'STROID_EOF'
-          org.gradle.jvmargs=-Xmx2g
+          org.gradle.jvmargs=-Xmx4g
           android.useAndroidX=true
           kotlin.code.style=official
+          STROID_EOF
+          cat > .gitignore <<'STROID_EOF'
+          .gradle/
+          build/
+          local.properties
+          node_modules/
+          *.iml
+          .idea/
+          rootfs.tar.gz
+          app/src/main/assets/monaco/
+          app/src/main/assets/xterm/
+          app/src/main/assets/rootfs.tar.gz
+          app/src/main/assets/libs.txt
+          app/src/main/jniLibs/
+          STROID_EOF
+          cat > .stroid-version <<'STROID_EOF'
+          2
+          STROID_EOF
+          cat > README.md <<'STROID_EOF'
+          # Stroid
+
+          بيئة تطوير لأندرويد تعمل أوفلاين.
+
+          - المرحلة 1: المحرر (Monaco) وإدارة الملفات
+          - المرحلة 2: Terminal وبيئة Debian (عبر proot) مع Python وNode وgit، وزر تشغيل الملف
+
+          ## البناء
+          شغّل `build-apk` من تبويب Actions ونزّل `stroid-debug-apk`.
+          أول تشغيل للتطبيق يفك بيئة Linux (دقيقة تقريبًا) ثم تعمل بدون إنترنت.
           STROID_EOF
           mkdir -p app
           cat > app/build.gradle.kts <<'STROID_EOF'
@@ -51,15 +64,23 @@ jobs:
               defaultConfig {
                   applicationId = "app.stroid"
                   minSdk = 26
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "0.1.0"
+                  targetSdk = 28
+                  versionCode = 2
+                  versionName = "0.2.0"
+                  ndk { abiFilters += "arm64-v8a" }
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
               kotlinOptions { jvmTarget = "17" }
+              androidResources { noCompress += "gz" }
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging = true
+                      keepDebugSymbols += "**/*.so"
+                  }
+              }
           }
 
           dependencies {
@@ -72,15 +93,18 @@ jobs:
           cat > app/src/main/AndroidManifest.xml <<'STROID_EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
               <application
                   android:label="Stroid"
                   android:theme="@style/Theme.Stroid"
-                  android:allowBackup="true">
+                  android:allowBackup="false"
+                  android:extractNativeLibs="true"
+                  android:usesCleartextTraffic="true">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true"
                       android:windowSoftInputMode="adjustResize"
-                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -89,23 +113,13 @@ jobs:
               </application>
           </manifest>
           STROID_EOF
-          mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/themes.xml <<'STROID_EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <style name="Theme.Stroid" parent="Theme.AppCompat.NoActionBar">
-                  <item name="android:windowBackground">#1e1f22</item>
-                  <item name="android:statusBarColor">#1e1f22</item>
-                  <item name="android:navigationBarColor">#1e1f22</item>
-              </style>
-          </resources>
-          STROID_EOF
           mkdir -p app/src/main/java/app/stroid
           cat > app/src/main/java/app/stroid/MainActivity.kt <<'STROID_EOF'
           package app.stroid
 
           import android.annotation.SuppressLint
           import android.os.Bundle
+          import android.util.Base64
           import android.webkit.JavascriptInterface
           import android.webkit.WebResourceRequest
           import android.webkit.WebView
@@ -118,6 +132,7 @@ jobs:
 
               private lateinit var web: WebView
               private lateinit var root: File
+              private var session: TerminalSession? = null
 
               @SuppressLint("SetJavaScriptEnabled")
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -138,6 +153,15 @@ jobs:
                   web.addJavascriptInterface(Bridge(), "Android")
                   setContentView(web)
                   web.loadUrl("https://appassets.androidplatform.net/assets/editor.html")
+              }
+
+              override fun onDestroy() {
+                  session?.stop()
+                  super.onDestroy()
+              }
+
+              private fun js(code: String) {
+                  web.post { web.evaluateJavascript(code, null) }
               }
 
               inner class Bridge {
@@ -166,6 +190,229 @@ jobs:
 
                   @JavascriptInterface
                   fun delete(path: String): Boolean = runCatching { safe(path).delete() }.getOrDefault(false)
+
+                  @JavascriptInterface
+                  fun termStart(cols: Int, rows: Int) {
+                      if (session?.alive == true) return
+                      val s = TerminalSession(
+                          this@MainActivity,
+                          root,
+                          emit = { b -> js("termWrite('" + Base64.encodeToString(b, Base64.NO_WRAP) + "')") },
+                          onEnd = { js("termEnded()") }
+                      )
+                      session = s
+                      s.start(cols.coerceIn(20, 300), rows.coerceIn(5, 100))
+                  }
+
+                  @JavascriptInterface
+                  fun termInput(b64: String) {
+                      session?.write(Base64.decode(b64, Base64.DEFAULT))
+                  }
+              }
+          }
+          STROID_EOF
+          mkdir -p app/src/main/java/app/stroid
+          cat > app/src/main/java/app/stroid/TerminalSession.kt <<'STROID_EOF'
+          package app.stroid
+
+          import android.content.Context
+          import android.system.Os
+          import java.io.BufferedInputStream
+          import java.io.File
+          import java.io.FilterInputStream
+          import java.io.InputStream
+          import java.io.OutputStream
+          import java.util.zip.GZIPInputStream
+          import kotlin.concurrent.thread
+
+          class TerminalSession(
+              private val ctx: Context,
+              private val projects: File,
+              private val emit: (ByteArray) -> Unit,
+              private val onEnd: () -> Unit
+          ) {
+              private val rootfs = File(ctx.filesDir, "rootfs")
+              private val marker = File(ctx.filesDir, "rootfs.installed")
+              private var proc: Process? = null
+              private var out: OutputStream? = null
+              private val pending = ArrayList<ByteArray>()
+
+              @Volatile
+              var alive = false
+                  private set
+
+              private fun say(s: String) = emit(s.replace("\n", "\r\n").toByteArray())
+
+              fun start(cols: Int, rows: Int) {
+                  alive = true
+                  thread(name = "stroid-terminal") {
+                      try {
+                          ensureRootfs()
+                          launch(cols, rows)
+                      } catch (e: Throwable) {
+                          say("\n[error] ${e.message ?: e.javaClass.simpleName}\n")
+                      } finally {
+                          synchronized(this) { out = null }
+                          alive = false
+                          say("\n[session ended - type anything to restart]\n")
+                          onEnd()
+                      }
+                  }
+              }
+
+              @Synchronized
+              fun write(b: ByteArray) {
+                  val o = out
+                  if (o == null) {
+                      if (pending.size < 1000) pending.add(b)
+                      return
+                  }
+                  try {
+                      o.write(b)
+                      o.flush()
+                  } catch (_: Exception) {
+                  }
+              }
+
+              @Synchronized
+              private fun attach(o: OutputStream) {
+                  out = o
+                  try {
+                      for (b in pending) o.write(b)
+                      o.flush()
+                  } catch (_: Exception) {
+                  }
+                  pending.clear()
+              }
+
+              fun stop() {
+                  proc?.destroyForcibly()
+              }
+
+              private class Counting(i: InputStream, val onBytes: (Long) -> Unit) : FilterInputStream(i) {
+                  var n = 0L
+                  override fun read(): Int {
+                      val r = super.read()
+                      if (r >= 0) { n++; onBytes(n) }
+                      return r
+                  }
+
+                  override fun read(b: ByteArray, off: Int, len: Int): Int {
+                      val r = super.read(b, off, len)
+                      if (r > 0) { n += r; onBytes(n) }
+                      return r
+                  }
+              }
+
+              private fun ensureRootfs() {
+                  if (marker.exists() && File(rootfs, "usr/bin/env").exists()) return
+                  marker.delete()
+                  say("Setting up the Linux environment (first run only)...\n")
+                  rootfs.deleteRecursively()
+                  rootfs.mkdirs()
+
+                  val total = runCatching {
+                      ctx.assets.openFd("rootfs.tar.gz").use { it.length }
+                  }.getOrDefault(-1L)
+
+                  val tar = ProcessBuilder("/system/bin/tar", "-xf", "-", "-C", rootfs.absolutePath)
+                      .redirectErrorStream(true).start()
+                  val drain = thread(isDaemon = true) {
+                      try {
+                          val buf = ByteArray(8192)
+                          while (tar.inputStream.read(buf) >= 0) { }
+                      } catch (_: Exception) {
+                      }
+                  }
+
+                  var lastPct = -1
+                  val counting = Counting(BufferedInputStream(ctx.assets.open("rootfs.tar.gz"), 1 shl 16)) { n ->
+                      if (total > 0) {
+                          val pct = (n * 100 / total).toInt()
+                          if (pct != lastPct && pct % 2 == 0) {
+                              lastPct = pct
+                              emit("\r  Unpacking... $pct%".toByteArray())
+                          }
+                      }
+                  }
+                  try {
+                      counting.use { src ->
+                          GZIPInputStream(src, 1 shl 16).use { gz ->
+                              tar.outputStream.use { o -> gz.copyTo(o, 1 shl 16) }
+                          }
+                      }
+                  } catch (e: Exception) {
+                      say("\n[warn] unpack: ${e.message}\n")
+                  }
+                  tar.waitFor()
+                  drain.join(3000)
+
+                  if (!File(rootfs, "usr/bin/env").exists()) {
+                      throw IllegalStateException("Unpack failed (rootfs incomplete)")
+                  }
+
+                  File(rootfs, "etc/resolv.conf").apply {
+                      delete(); parentFile?.mkdirs()
+                      writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+                  }
+                  File(rootfs, "etc/hosts").apply {
+                      delete(); writeText("127.0.0.1 localhost\n::1 localhost\n")
+                  }
+                  File(rootfs, "root/projects").mkdirs()
+                  File(rootfs, "tmp").mkdirs()
+                  marker.writeText("1")
+                  say("\n\nDone.\n")
+              }
+
+              private fun launch(cols: Int, rows: Int) {
+                  val nlib = ctx.applicationInfo.nativeLibraryDir
+                  val libDir = File(ctx.filesDir, "lib").apply { deleteRecursively(); mkdirs() }
+                  runCatching { ctx.assets.open("libs.txt").bufferedReader().readLines() }
+                      .getOrDefault(emptyList()).forEach { line ->
+                          val p = line.trim().split(" ")
+                          if (p.size == 2) runCatching {
+                              Os.symlink(File(nlib, p[0]).path, File(libDir, p[1]).path)
+                          }
+                      }
+                  val tmp = File(ctx.filesDir, "tmp").apply { mkdirs() }
+
+                  val proot = File(nlib, "libproot.so")
+                  if (!proot.exists()) throw IllegalStateException("proot is missing from the app")
+
+                  val start = "stty cols $cols rows $rows 2>/dev/null; exec bash -l"
+                  val cmd = listOf(
+                      proot.path, "--link2symlink", "-0", "--kill-on-exit",
+                      "-r", rootfs.path,
+                      "-b", "/dev", "-b", "/proc", "-b", "/sys",
+                      "-b", "${projects.path}:/root/projects",
+                      "-w", "/root/projects",
+                      "/usr/bin/env", "-i",
+                      "HOME=/root", "TERM=xterm-256color", "LANG=C.UTF-8",
+                      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                      "/usr/bin/script", "-qf", "-c", start, "/dev/null"
+                  )
+                  val pb = ProcessBuilder(cmd)
+                  pb.directory(ctx.filesDir)
+                  pb.redirectErrorStream(true)
+                  pb.environment().apply {
+                      clear()
+                      put("PROOT_TMP_DIR", tmp.path)
+                      put("PROOT_LOADER", File(nlib, "libproot-loader.so").path)
+                      put("LD_LIBRARY_PATH", libDir.path)
+                      put("PROOT_NO_SECCOMP", "1")
+                  }
+                  val p = pb.start()
+                  proc = p
+                  attach(p.outputStream)
+
+                  val buf = ByteArray(4096)
+                  val ins = p.inputStream
+                  while (true) {
+                      val n = ins.read(buf)
+                      if (n < 0) break
+                      emit(buf.copyOf(n))
+                  }
+                  p.waitFor()
               }
           }
           STROID_EOF
@@ -177,47 +424,82 @@ jobs:
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
           <title>Stroid</title>
+          <link rel="stylesheet" href="xterm/xterm.css">
           <style>
-            :root { --bg:#1e1f22; --bar:#2b2d30; --line:#393b40; --fg:#dfe1e5; --mut:#8a8d93; --acc:#5b8def; }
-            * { box-sizing: border-box; }
+            :root { --bg:#1e1f22; --bar:#2b2d30; --line:#393b40; --fg:#dfe1e5; --mut:#8a8d93; --acc:#5b8def; --run:#3d8b5f; }
+            * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
             html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
-              font-family: system-ui, sans-serif; overflow:hidden; }
+              font-family:ui-monospace, Menlo, monospace; overflow:hidden; }
             #app { display:flex; flex-direction:column; height:100%; }
-            #tabs { display:flex; background:var(--bar); border-bottom:1px solid var(--line); overflow-x:auto; flex:none; }
-            .tab { padding:10px 12px; font-size:13px; color:var(--mut); white-space:nowrap; border-top:2px solid transparent; }
+            #tabs { display:flex; align-items:stretch; background:var(--bar); border-bottom:1px solid var(--line);
+              overflow-x:auto; flex:none; font-size:12px; scrollbar-width:none; }
+            .tab { padding:10px 12px; color:var(--mut); white-space:nowrap; border-top:2px solid transparent; display:flex; gap:8px; align-items:center; }
             .tab.on { color:var(--fg); background:var(--bg); border-top-color:var(--acc); }
-            #main { flex:1; position:relative; min-height:0; }
+            .tab i { font-style:normal; color:var(--mut); padding:0 2px; font-size:14px; }
+            .plus { margin-left:auto; padding:8px 14px; font-size:18px; color:var(--mut); }
+            #main { flex:1; position:relative; min-height:0; display:flex; flex-direction:column; }
+            #ed { flex:1; position:relative; min-height:70px; }
             #editor { position:absolute; inset:0; }
-            #files { position:absolute; inset:0; background:var(--bg); overflow:auto; display:none; padding:8px; }
-            .row { display:flex; align-items:center; padding:12px; border-bottom:1px solid var(--line); font-size:14px; }
+            #divider { display:none; height:16px; flex:none; background:var(--bar); touch-action:none; align-items:center; justify-content:center; border-top:1px solid var(--line); }
+            #divider div { width:40px; height:4px; border-radius:2px; background:#5c5f66; }
+            #termPane { display:none; height:40%; flex:none; position:relative; background:#181a1d; }
+            #termEl { position:absolute; inset:0; padding:4px 0 0 6px; }
+            #files { position:absolute; inset:0; background:var(--bg); overflow:auto; display:none; z-index:5; }
+            .row { display:flex; align-items:center; padding:14px 12px; border-bottom:1px solid var(--line); font-size:14px; }
             .row span { flex:1; }
-            .row b { color:#e06c6c; font-weight:400; padding:0 8px; }
-            #keys { display:flex; gap:4px; padding:6px; background:var(--bar); border-top:1px solid var(--line); flex:none; }
-            #keys button { flex:1; padding:9px 0; font-size:14px; background:var(--line); color:var(--fg);
-              border:0; border-radius:4px; font-family:ui-monospace, monospace; }
-            #nav { display:flex; background:var(--bg); border-top:1px solid var(--line); flex:none;
-              padding-bottom: env(safe-area-inset-bottom, 0px); }
-            #nav button { flex:1; padding:12px 0; background:none; border:0; color:var(--mut); font-size:12px; }
+            .row b { color:#e06c6c; font-weight:400; padding:0 6px; font-size:13px; }
+            #fab { position:absolute; right:14px; bottom:14px; width:46px; height:46px; border-radius:50%;
+              background:var(--run); color:#fff; border:0; display:flex; align-items:center; justify-content:center; z-index:4; }
+            #status { position:absolute; left:10px; bottom:6px; font-size:11px; color:var(--mut); z-index:3; pointer-events:none; }
+            #keys { display:flex; gap:4px; padding:6px; background:var(--bar); border-top:1px solid var(--line); flex:none; overflow-x:auto; scrollbar-width:none; }
+            #keys button { flex:1 0 auto; min-width:40px; padding:9px 8px; font-size:14px; background:var(--line); color:var(--fg);
+              border:0; border-radius:4px; font-family:inherit; }
+            #nav { display:flex; background:var(--bg); border-top:1px solid var(--line); flex:none; padding-bottom:env(safe-area-inset-bottom, 0px); }
+            #nav button { flex:1; padding:8px 0 9px; background:none; border:0; color:var(--mut); font-size:10px; font-family:system-ui, sans-serif;
+              display:flex; flex-direction:column; align-items:center; gap:3px; }
             #nav button.on { color:var(--acc); }
-            #nav button:disabled { opacity:.4; }
+            svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+            #fab svg { fill:#fff; stroke:#fff; }
+            #modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:20; padding:20px; }
+            #box { background:var(--bar); border:1px solid var(--line); border-radius:12px; padding:16px; width:100%; max-width:340px; font-family:system-ui, sans-serif; }
+            #box h3 { margin:0 0 12px; font-size:15px; font-weight:500; }
+            #box input { width:100%; padding:10px; font-size:15px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; font-family:ui-monospace, monospace; }
+            #btns { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+            #btns button { padding:9px 16px; font-size:14px; border-radius:6px; border:1px solid var(--line); background:none; color:var(--fg); }
+            #btns button.go { background:var(--acc); border-color:var(--acc); color:#fff; }
+            #btns button.bad { background:#c0504d; border-color:#c0504d; color:#fff; }
+            #toast { position:fixed; left:50%; bottom:110px; transform:translateX(-50%); background:#3a3b3f; color:var(--fg); padding:9px 14px;
+              border-radius:8px; font-size:13px; font-family:system-ui, sans-serif; display:none; z-index:30; max-width:90%; text-align:center; }
           </style>
           </head>
           <body>
           <div id="app">
             <div id="tabs"></div>
             <div id="main">
-              <div id="editor"></div>
+              <div id="ed">
+                <div id="editor"></div>
+                <div id="status"></div>
+                <button id="fab" aria-label="Run"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></button>
+              </div>
+              <div id="divider"><div></div></div>
+              <div id="termPane"><div id="termEl"></div></div>
               <div id="files"></div>
             </div>
             <div id="keys"></div>
             <div id="nav">
-              <button id="nFiles">Files</button>
-              <button id="nEditor" class="on">Editor</button>
-              <button id="nSave">Save</button>
-              <button disabled>Terminal</button>
+              <button id="nFiles"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Files</button>
+              <button id="nEditor" class="on"><svg viewBox="0 0 24 24"><path d="M8 8l-5 4 5 4M16 8l5 4-5 4M14 5l-4 14"/></svg>Editor</button>
+              <button id="nTerm"><svg viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 19h7"/></svg>Terminal</button>
+              <button id="nGit"><svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 5-12 2-12 7"/></svg>Git</button>
+              <button id="nSet"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Settings</button>
             </div>
           </div>
 
+          <div id="modal"><div id="box"><h3 id="mTitle"></h3><input id="mInput" autocapitalize="off" autocomplete="off" spellcheck="false"><div id="btns"><button id="mNo">Cancel</button><button id="mYes" class="go">OK</button></div></div></div>
+          <div id="toast"></div>
+
+          <script src="xterm/xterm.js"></script>
+          <script src="xterm/addon-fit.js"></script>
           <script src="monaco/vs/loader.js"></script>
           <script>
           var base = location.origin + '/assets/monaco';
@@ -229,13 +511,104 @@ jobs:
           };
           require.config({ paths: { vs: 'monaco/vs' } });
 
+          var toastTimer;
+          function toast(msg) {
+            var t = document.getElementById('toast');
+            t.textContent = msg; t.style.display = 'block';
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(function () { t.style.display = 'none'; }, 1800);
+          }
+
+          function dialog(title, withInput, value, yesLabel, danger, cb) {
+            var m = document.getElementById('modal'), inp = document.getElementById('mInput');
+            document.getElementById('mTitle').textContent = title;
+            inp.style.display = withInput ? 'block' : 'none';
+            inp.value = value || '';
+            var yes = document.getElementById('mYes');
+            yes.textContent = yesLabel; yes.className = danger ? 'bad' : 'go';
+            m.style.display = 'flex';
+            if (withInput) setTimeout(function () { inp.focus(); inp.select(); }, 50);
+            function close() { m.style.display = 'none'; yes.onclick = null; }
+            document.getElementById('mNo').onclick = close;
+            yes.onclick = function () { var v = inp.value; close(); cb(v); };
+          }
+
+          function b64enc(str) {
+            var bytes = new TextEncoder().encode(str), s = '';
+            for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+            return btoa(s);
+          }
+
+          var term = null, fitAddon = null, termOpened = false, termStarted = false, termVisible = false;
+          var setKeys = function () {};
+
+          if (window.Terminal) {
+            term = new Terminal({ fontSize: 13, cursorBlink: true, scrollback: 3000,
+              theme: { background: '#181a1d', foreground: '#bcbec4' } });
+            fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+            term.onData(function (d) {
+              if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+              Android.termInput(b64enc(d));
+            });
+          }
+
+          function termWrite(b64) {
+            if (!term) return;
+            var bin = atob(b64), u = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+            term.write(u);
+          }
+          function termEnded() { termStarted = false; }
+
+          function fitNow() { try { if (fitAddon && termOpened) fitAddon.fit(); } catch (e) {} }
+
+          function showTerm(show) {
+            if (!term) { toast('Terminal files are missing from this build'); return; }
+            termVisible = show;
+            document.getElementById('divider').style.display = show ? 'flex' : 'none';
+            document.getElementById('termPane').style.display = show ? 'block' : 'none';
+            document.getElementById('nTerm').className = show ? 'on' : '';
+            if (!show) { setKeys('editor'); return; }
+            if (!termOpened) {
+              term.open(document.getElementById('termEl'));
+              termOpened = true;
+              term.textarea.setAttribute('autocorrect', 'off');
+              term.textarea.setAttribute('autocapitalize', 'off');
+              term.textarea.setAttribute('spellcheck', 'false');
+              term.textarea.addEventListener('focus', function () { setKeys('term'); });
+            }
+            setTimeout(function () {
+              fitNow();
+              if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+              term.focus();
+              setKeys('term');
+            }, 80);
+          }
+
+          (function () {
+            var dv = document.getElementById('divider'), drag = false;
+            dv.addEventListener('pointerdown', function (e) { drag = true; dv.setPointerCapture(e.pointerId); });
+            dv.addEventListener('pointermove', function (e) {
+              if (!drag) return;
+              var r = document.getElementById('main').getBoundingClientRect();
+              var h = Math.max(80, Math.min(r.height - 120, r.bottom - e.clientY));
+              document.getElementById('termPane').style.height = h + 'px';
+            });
+            function end() { if (drag) { drag = false; fitNow(); } }
+            dv.addEventListener('pointerup', end);
+            dv.addEventListener('pointercancel', end);
+            window.addEventListener('resize', function () { setTimeout(fitNow, 100); });
+          })();
+
           require(['vs/editor/editor.main'], function () {
-            var models = {};
-            var current = null;
+            var models = {}, current = null, saveTimer;
             var editor = monaco.editor.create(document.getElementById('editor'), {
               theme: 'vs-dark', automaticLayout: true, fontSize: 14, minimap: { enabled: false },
-              wordWrap: 'on', scrollBeyondLastLine: false
+              wordWrap: 'on', scrollBeyondLastLine: false, padding: { top: 8 }
             });
+
+            function setStatus(s) { document.getElementById('status').textContent = s; }
 
             function langFor(path) {
               var ext = '.' + path.split('.').pop().toLowerCase();
@@ -252,13 +625,20 @@ jobs:
               Object.keys(models).forEach(function (p) {
                 var t = document.createElement('div');
                 t.className = 'tab' + (p === current ? ' on' : '');
-                t.textContent = p.split('/').pop();
-                t.onclick = function () { openFile(p); };
-                t.oncontextmenu = function (e) { e.preventDefault(); closeTab(p); };
+                var n = document.createElement('span');
+                n.textContent = p.split('/').pop();
+                n.onclick = function () { openFile(p); };
+                t.appendChild(n);
+                if (p === current) {
+                  var x = document.createElement('i');
+                  x.textContent = '\u00d7';
+                  x.onclick = function () { closeTab(p); };
+                  t.appendChild(x);
+                }
                 el.appendChild(t);
               });
               var plus = document.createElement('div');
-              plus.className = 'tab';
+              plus.className = 'plus';
               plus.textContent = '+';
               plus.onclick = newFile;
               el.appendChild(plus);
@@ -272,38 +652,49 @@ jobs:
             }
 
             function openFile(p) {
-              if (!models[p]) {
-                models[p] = monaco.editor.createModel(Android.read(p), langFor(p));
-              }
+              if (!models[p]) models[p] = monaco.editor.createModel(Android.read(p), langFor(p));
               current = p;
               editor.setModel(models[p]);
               renderTabs();
               showPanel('editor');
+              setStatus('');
             }
 
             function closeTab(p) {
               if (!models[p]) return;
+              saveNow(p);
               models[p].dispose();
               delete models[p];
               var left = Object.keys(models);
               if (current === p) {
                 current = left.length ? left[0] : null;
-                if (current) editor.setModel(models[current]);
+                if (current) editor.setModel(models[current]); else editor.setModel(null);
               }
               renderTabs();
             }
 
             function newFile() {
-              var name = prompt('File name', 'new.py');
-              if (!name) return;
-              if (!Android.write(name, '')) { alert('Could not create file'); return; }
-              openFile(name);
+              dialog('New file', true, 'new.py', 'Create', false, function (name) {
+                name = (name || '').trim().replace(/^\/+/, '');
+                if (!name) { toast('Enter a file name'); return; }
+                if (!Android.write(name, '')) { toast('Could not create file'); return; }
+                if (models[name]) { models[name].setValue(''); }
+                openFile(name);
+                toast('Created ' + name);
+              });
             }
 
-            function save() {
-              if (!current) return;
-              if (!Android.write(current, models[current].getValue())) alert('Save failed');
+            function saveNow(p) {
+              p = p || current;
+              if (!p || !models[p]) return;
+              if (Android.write(p, models[p].getValue())) setStatus('Saved'); else toast('Save failed');
             }
+
+            editor.onDidChangeModelContent(function () {
+              setStatus('Editing...');
+              clearTimeout(saveTimer);
+              saveTimer = setTimeout(function () { saveNow(); }, 600);
+            });
 
             function renderFiles() {
               var el = document.getElementById('files');
@@ -318,7 +709,11 @@ jobs:
                 var d = document.createElement('b');
                 d.textContent = 'Delete';
                 d.onclick = function () {
-                  if (confirm('Delete ' + p + '?')) { closeTab(p); Android.delete(p); renderFiles(); }
+                  dialog('Delete ' + p + '?', false, '', 'Delete', true, function () {
+                    if (models[p]) closeTab(p);
+                    if (Android.delete(p)) toast('Deleted ' + p); else toast('Could not delete');
+                    renderFiles();
+                  });
                 };
                 r.appendChild(s); r.appendChild(d);
                 el.appendChild(r);
@@ -330,25 +725,63 @@ jobs:
               el.appendChild(add);
             }
 
-            var keys = [['Tab', '  '], ['{', '{'], ['}', '}'], ['[', '['], [']', ']'],
-                        ['(', '('], [')', ')'], [';', ';'], ['Undo', null], ['Redo', null]];
-            var kb = document.getElementById('keys');
-            keys.forEach(function (k) {
-              var b = document.createElement('button');
-              b.textContent = k[0];
-              b.onmousedown = function (e) { e.preventDefault(); };
-              b.onclick = function () {
-                editor.focus();
-                if (k[0] === 'Undo') editor.trigger('keys', 'undo', null);
-                else if (k[0] === 'Redo') editor.trigger('keys', 'redo', null);
-                else editor.trigger('keys', 'type', { text: k[1] });
-              };
-              kb.appendChild(b);
-            });
+            var editorKeys = [['Tab', '\t', 0], ['{ }', '{}', 1], ['[ ]', '[]', 1], ['( )', '()', 1],
+                              ['" "', '""', 1], [';', ';', 0], ['Undo'], ['Redo']];
+            var termKeys = [['Esc', '\x1b'], ['Tab', '\t'], ['Ctrl-C', '\x03'], ['Ctrl-D', '\x04'],
+                            ['\u2191', '\x1b[A'], ['\u2193', '\x1b[B'], ['\u2190', '\x1b[D'], ['\u2192', '\x1b[C'],
+                            ['/', '/'], ['-', '-'], ['|', '|'], ['~', '~']];
+            var kb = document.getElementById('keys'), keyMode = '';
+
+            setKeys = function (mode) {
+              if (mode === keyMode) return;
+              keyMode = mode;
+              kb.innerHTML = '';
+              (mode === 'term' ? termKeys : editorKeys).forEach(function (k) {
+                var b = document.createElement('button');
+                b.textContent = k[0];
+                b.onmousedown = function (e) { e.preventDefault(); };
+                b.onclick = function () {
+                  if (mode === 'term') {
+                    if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+                    Android.termInput(b64enc(k[1]));
+                    return;
+                  }
+                  if (!current) { toast('Open a file first'); return; }
+                  editor.focus();
+                  if (k[0] === 'Undo') editor.trigger('keys', 'undo', null);
+                  else if (k[0] === 'Redo') editor.trigger('keys', 'redo', null);
+                  else {
+                    editor.trigger('keys', 'type', { text: k[1] });
+                    if (k[2]) editor.trigger('keys', 'cursorLeft', null);
+                  }
+                };
+                kb.appendChild(b);
+              });
+            };
+            setKeys('editor');
+            editor.onDidFocusEditorText(function () { setKeys('editor'); });
+
+            function runCurrent() {
+              if (!current) { toast('Open a file first'); return; }
+              saveNow();
+              var ext = current.split('.').pop().toLowerCase();
+              var runners = { py: 'python3', js: 'node', mjs: 'node', sh: 'bash' };
+              var r = runners[ext];
+              if (!r) { toast('No runner for .' + ext + ' yet'); return; }
+              var q = "'" + current.replace(/'/g, "'\\''") + "'";
+              showTerm(true);
+              setTimeout(function () {
+                Android.termInput(b64enc('cd /root/projects && ' + r + ' ' + q + '\r'));
+              }, 200);
+            }
 
             document.getElementById('nFiles').onclick = function () { showPanel('files'); };
-            document.getElementById('nEditor').onclick = function () { showPanel('editor'); };
-            document.getElementById('nSave').onclick = save;
+            document.getElementById('nEditor').onclick = function () { showPanel('editor'); editor.focus(); };
+            document.getElementById('nTerm').onclick = function () { showTerm(!termVisible); };
+            document.getElementById('nGit').onclick = function () { toast('Git arrives in a later phase'); };
+            document.getElementById('nSet').onclick = function () { toast('Settings arrive in a later phase'); };
+            document.getElementById('fab').onclick = runCurrent;
+            document.getElementById('termPane').addEventListener('click', function () { if (term) term.focus(); });
 
             var existing = Android.list().split('\n').filter(Boolean);
             if (!existing.length) {
@@ -361,34 +794,10 @@ jobs:
           </body>
           </html>
           STROID_EOF
-          cat > .gitignore <<'STROID_EOF'
-          .gradle/
-          build/
-          local.properties
-          node_modules/
-          app/src/main/assets/monaco/
-          *.iml
-          .idea/
-          STROID_EOF
-          cat > README.md <<'STROID_EOF'
-          # Stroid
-
-          بيئة تطوير لأندرويد تعمل أوفلاين. المرحلة 1: المحرر (Monaco) وإدارة الملفات.
-
-          ## البناء
-          1. ارفع المشروع إلى GitHub.
-          2. افتح تبويب Actions وشغّل `build-apk`.
-          3. نزّل `stroid-debug-apk` من نتيجة التشغيل وثبّته على الجوال.
-
-          محرر Monaco ينزّل ويُضمَّن في الـ APK وقت البناء، ولا يحتاج التطبيق إنترنت بعد التثبيت.
-
-          ## المراحل القادمة
-          2. Terminal وبيئة Linux (proot)  3. اللغات ومتجرها  4. دعم الذكاء الاصطناعي
-          STROID_EOF
           git config user.name "stroid-bot"
           git config user.email "bot@users.noreply.github.com"
           git add -A
-          git commit -m "Add Stroid phase 1 project"
+          git commit -m "Stroid phase 2: terminal and Linux environment"
           git push
           fi
 
@@ -401,11 +810,151 @@ jobs:
         with:
           node-version: 20
 
-      - name: Bundle Monaco for offline use
+      - name: Bundle Monaco and xterm for offline use
         run: |
-          npm install --no-save monaco-editor@0.52.0
-          mkdir -p app/src/main/assets/monaco
+          npm install --no-save monaco-editor@0.52.0 @xterm/xterm@5.5.0 @xterm/addon-fit@0.10.0
+          mkdir -p app/src/main/assets/monaco app/src/main/assets/xterm
           cp -r node_modules/monaco-editor/min/vs app/src/main/assets/monaco/vs
+          cp node_modules/@xterm/xterm/lib/xterm.js node_modules/@xterm/xterm/css/xterm.css node_modules/@xterm/addon-fit/lib/addon-fit.js app/src/main/assets/xterm/
+
+      - name: Fetch proot from the Termux repository
+        run: |
+          cat > "$RUNNER_TEMP/fetch_proot.py" <<'STROID_PY'
+          import urllib.request, gzip, lzma, os, re, subprocess, shutil, sys, tempfile, glob
+
+          BASE = "https://packages.termux.dev/apt/termux-main/"
+          IDX = BASE + "dists/stable/main/binary-aarch64/"
+
+          def get(url):
+              req = urllib.request.Request(url, headers={"User-Agent": "stroid-ci"})
+              return urllib.request.urlopen(req, timeout=300).read()
+
+          def load_index():
+              for name, dec in (("Packages.xz", lzma.decompress), ("Packages.gz", gzip.decompress), ("Packages", lambda b: b)):
+                  try:
+                      return dec(get(IDX + name)).decode("utf-8", "replace")
+                  except Exception as e:
+                      print("index", name, "failed:", e)
+              sys.exit("cannot load the Termux package index")
+
+          def parse(text):
+              pk = {}
+              for block in text.split("\n\n"):
+                  f, key = {}, None
+                  for line in block.split("\n"):
+                      if line.startswith(" ") and key:
+                          f[key] += "\n" + line
+                      elif ":" in line:
+                          key, v = line.split(":", 1)
+                          key = key.strip()
+                          f[key] = v.strip()
+                  if "Package" in f:
+                      pk[f["Package"]] = f
+              return pk
+
+          def closure(pk, root):
+              seen, order, stack = set(), [], [root]
+              while stack:
+                  n = stack.pop()
+                  if n in seen or n not in pk:
+                      continue
+                  if n != root and not n.startswith("lib"):
+                      continue
+                  seen.add(n)
+                  order.append(n)
+                  for d in pk[n].get("Depends", "").split(","):
+                      d = re.sub(r"\(.*?\)", "", d.split("|")[0]).strip()
+                      if d:
+                          stack.append(d)
+              return order
+
+          def unpack(deb, dest):
+              members = subprocess.check_output(["ar", "t", deb]).decode().split()
+              data = [m for m in members if m.startswith("data.tar")][0]
+              flag = {"xz": "-J", "gz": "-z", "zst": "--zstd", "bz2": "-j"}.get(data.split(".")[-1], "")
+              subprocess.run("ar p '%s' %s | tar -x %s -C '%s'" % (deb, data, flag, dest), shell=True, check=True)
+
+          def main():
+              pk = parse(load_index())
+              pkgs = closure(pk, "proot")
+              print("packages:", pkgs)
+              if "proot" not in pkgs:
+                  sys.exit("proot not found in the Termux index")
+              work = tempfile.mkdtemp()
+              out = "app/src/main/jniLibs/arm64-v8a"
+              os.makedirs(out, exist_ok=True)
+              os.makedirs("app/src/main/assets", exist_ok=True)
+              manifest, n = [], 0
+              for name in pkgs:
+                  deb = os.path.join(work, name + ".deb")
+                  with open(deb, "wb") as fh:
+                      fh.write(get(BASE + pk[name]["Filename"]))
+                  d = os.path.join(work, name)
+                  os.makedirs(d)
+                  unpack(deb, d)
+                  usr = os.path.join(d, "data/data/com.termux/files/usr")
+                  if name == "proot":
+                      shutil.copy(os.path.join(usr, "bin/proot"), os.path.join(out, "libproot.so"))
+                      shutil.copy(os.path.join(usr, "libexec/proot/loader"), os.path.join(out, "libproot-loader.so"))
+                      print(subprocess.run(["readelf", "-d", os.path.join(out, "libproot.so")], capture_output=True, text=True).stdout)
+                  else:
+                      for path in glob.glob(usr + "/lib/**/*.so*", recursive=True):
+                          if os.path.islink(path) or not os.path.isfile(path):
+                              continue
+                          soname = os.path.basename(path)
+                          r = subprocess.run(["readelf", "-d", path], capture_output=True, text=True)
+                          m = re.search(r"Library soname: \[(.+?)\]", r.stdout)
+                          if m:
+                              soname = m.group(1)
+                          stored = "libdep%d.so" % n
+                          n += 1
+                          shutil.copy(path, os.path.join(out, stored))
+                          manifest.append("%s %s" % (stored, soname))
+              with open("app/src/main/assets/libs.txt", "w") as fh:
+                  fh.write("\n".join(manifest) + "\n")
+              print("libs manifest:", manifest)
+
+          if __name__ == "__main__":
+              main()
+          STROID_PY
+          python3 "$RUNNER_TEMP/fetch_proot.py"
+
+      - name: Restore Linux rootfs cache
+        id: rootfs-cache
+        uses: actions/cache@v4
+        with:
+          path: rootfs.tar.gz
+          key: rootfs-debian12-v1
+
+      - name: Set up arm64 emulation
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build Linux rootfs
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: |
+          docker run --name stroid-rootfs --platform linux/arm64 debian:bookworm-slim bash -c '
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          echo "APT::Sandbox::User \"root\";" > /etc/apt/apt.conf.d/01-stroid
+          apt-get update
+          apt-get install -y --no-install-recommends bash coreutils ca-certificates curl git nano less procps util-linux bsdutils python3 python3-pip python3-venv nodejs npm
+          apt-get clean
+          rm -rf /var/lib/apt/lists/*
+          mkdir -p /root/projects
+          '
+          docker export stroid-rootfs -o rootfs.tar
+          mkdir fs
+          sudo tar -xpf rootfs.tar -C fs
+          sudo rm -rf fs/.dockerenv fs/dev/* fs/proc/* fs/sys/*
+          sudo tar --hard-dereference --numeric-owner -C fs -czpf rootfs.tar.gz .
+          sudo chown "$(id -u):$(id -g)" rootfs.tar.gz
+          ls -lh rootfs.tar.gz
+
+      - name: Add rootfs to the app
+        run: cp rootfs.tar.gz app/src/main/assets/rootfs.tar.gz
 
       - uses: gradle/actions/setup-gradle@v4
         with:
