@@ -232,7 +232,6 @@ require(['vs/editor/editor.main'], function () {
     var b = document.createElement('button');
     b.textContent = k[0];
     b.onmousedown = function (e) { e.preventDefault(); };
-    b.ontouchstart = function (e) { e.preventDefault(); };
     b.onclick = function () {
       if (!current) { toast('Open a file first'); return; }
       editor.focus();
