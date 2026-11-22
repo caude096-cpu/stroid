@@ -2,6 +2,11 @@
 build/
 local.properties
 node_modules/
-app/src/main/assets/monaco/
 *.iml
 .idea/
+rootfs.tar.gz
+app/src/main/assets/monaco/
+app/src/main/assets/xterm/
+app/src/main/assets/rootfs.tar.gz
+app/src/main/assets/libs.txt
+app/src/main/jniLibs/

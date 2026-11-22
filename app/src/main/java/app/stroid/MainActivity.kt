@@ -2,6 +2,7 @@ package app.stroid
 
 import android.annotation.SuppressLint
 import android.os.Bundle
+import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -14,6 +15,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
     private lateinit var root: File
+    private var session: TerminalSession? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,6 +36,15 @@ class MainActivity : AppCompatActivity() {
         web.addJavascriptInterface(Bridge(), "Android")
         setContentView(web)
         web.loadUrl("https://appassets.androidplatform.net/assets/editor.html")
+    }
+
+    override fun onDestroy() {
+        session?.stop()
+        super.onDestroy()
+    }
+
+    private fun js(code: String) {
+        web.post { web.evaluateJavascript(code, null) }
     }
 
     inner class Bridge {
@@ -62,5 +73,23 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun delete(path: String): Boolean = runCatching { safe(path).delete() }.getOrDefault(false)
+
+        @JavascriptInterface
+        fun termStart(cols: Int, rows: Int) {
+            if (session?.alive == true) return
+            val s = TerminalSession(
+                this@MainActivity,
+                root,
+                emit = { b -> js("termWrite('" + Base64.encodeToString(b, Base64.NO_WRAP) + "')") },
+                onEnd = { js("termEnded()") }
+            )
+            session = s
+            s.start(cols.coerceIn(20, 300), rows.coerceIn(5, 100))
+        }
+
+        @JavascriptInterface
+        fun termInput(b64: String) {
+            session?.write(Base64.decode(b64, Base64.DEFAULT))
+        }
     }
 }

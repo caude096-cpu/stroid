@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Stroid</title>
+<link rel="stylesheet" href="xterm/xterm.css">
 <style>
   :root { --bg:#1e1f22; --bar:#2b2d30; --line:#393b40; --fg:#dfe1e5; --mut:#8a8d93; --acc:#5b8def; --run:#3d8b5f; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -16,8 +17,13 @@
   .tab.on { color:var(--fg); background:var(--bg); border-top-color:var(--acc); }
   .tab i { font-style:normal; color:var(--mut); padding:0 2px; font-size:14px; }
   .plus { margin-left:auto; padding:8px 14px; font-size:18px; color:var(--mut); }
-  #main { flex:1; position:relative; min-height:0; }
+  #main { flex:1; position:relative; min-height:0; display:flex; flex-direction:column; }
+  #ed { flex:1; position:relative; min-height:70px; }
   #editor { position:absolute; inset:0; }
+  #divider { display:none; height:16px; flex:none; background:var(--bar); touch-action:none; align-items:center; justify-content:center; border-top:1px solid var(--line); }
+  #divider div { width:40px; height:4px; border-radius:2px; background:#5c5f66; }
+  #termPane { display:none; height:40%; flex:none; position:relative; background:#181a1d; }
+  #termEl { position:absolute; inset:0; padding:4px 0 0 6px; }
   #files { position:absolute; inset:0; background:var(--bg); overflow:auto; display:none; z-index:5; }
   .row { display:flex; align-items:center; padding:14px 12px; border-bottom:1px solid var(--line); font-size:14px; }
   .row span { flex:1; }
@@ -33,7 +39,7 @@
     display:flex; flex-direction:column; align-items:center; gap:3px; }
   #nav button.on { color:var(--acc); }
   svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-  #fab svg { width:22px; height:22px; fill:#fff; stroke:#fff; }
+  #fab svg { fill:#fff; stroke:#fff; }
   #modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:20; padding:20px; }
   #box { background:var(--bar); border:1px solid var(--line); border-radius:12px; padding:16px; width:100%; max-width:340px; font-family:system-ui, sans-serif; }
   #box h3 { margin:0 0 12px; font-size:15px; font-weight:500; }
@@ -50,9 +56,13 @@
 <div id="app">
   <div id="tabs"></div>
   <div id="main">
-    <div id="editor"></div>
-    <div id="status"></div>
-    <button id="fab" aria-label="Run"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></button>
+    <div id="ed">
+      <div id="editor"></div>
+      <div id="status"></div>
+      <button id="fab" aria-label="Run"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></button>
+    </div>
+    <div id="divider"><div></div></div>
+    <div id="termPane"><div id="termEl"></div></div>
     <div id="files"></div>
   </div>
   <div id="keys"></div>
@@ -68,6 +78,8 @@
 <div id="modal"><div id="box"><h3 id="mTitle"></h3><input id="mInput" autocapitalize="off" autocomplete="off" spellcheck="false"><div id="btns"><button id="mNo">Cancel</button><button id="mYes" class="go">OK</button></div></div></div>
 <div id="toast"></div>
 
+<script src="xterm/xterm.js"></script>
+<script src="xterm/addon-fit.js"></script>
 <script src="monaco/vs/loader.js"></script>
 <script>
 var base = location.origin + '/assets/monaco';
@@ -100,6 +112,74 @@ function dialog(title, withInput, value, yesLabel, danger, cb) {
   document.getElementById('mNo').onclick = close;
   yes.onclick = function () { var v = inp.value; close(); cb(v); };
 }
+
+function b64enc(str) {
+  var bytes = new TextEncoder().encode(str), s = '';
+  for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+var term = null, fitAddon = null, termOpened = false, termStarted = false, termVisible = false;
+var setKeys = function () {};
+
+if (window.Terminal) {
+  term = new Terminal({ fontSize: 13, cursorBlink: true, scrollback: 3000,
+    theme: { background: '#181a1d', foreground: '#bcbec4' } });
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.onData(function (d) {
+    if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+    Android.termInput(b64enc(d));
+  });
+}
+
+function termWrite(b64) {
+  if (!term) return;
+  var bin = atob(b64), u = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  term.write(u);
+}
+function termEnded() { termStarted = false; }
+
+function fitNow() { try { if (fitAddon && termOpened) fitAddon.fit(); } catch (e) {} }
+
+function showTerm(show) {
+  if (!term) { toast('Terminal files are missing from this build'); return; }
+  termVisible = show;
+  document.getElementById('divider').style.display = show ? 'flex' : 'none';
+  document.getElementById('termPane').style.display = show ? 'block' : 'none';
+  document.getElementById('nTerm').className = show ? 'on' : '';
+  if (!show) { setKeys('editor'); return; }
+  if (!termOpened) {
+    term.open(document.getElementById('termEl'));
+    termOpened = true;
+    term.textarea.setAttribute('autocorrect', 'off');
+    term.textarea.setAttribute('autocapitalize', 'off');
+    term.textarea.setAttribute('spellcheck', 'false');
+    term.textarea.addEventListener('focus', function () { setKeys('term'); });
+  }
+  setTimeout(function () {
+    fitNow();
+    if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+    term.focus();
+    setKeys('term');
+  }, 80);
+}
+
+(function () {
+  var dv = document.getElementById('divider'), drag = false;
+  dv.addEventListener('pointerdown', function (e) { drag = true; dv.setPointerCapture(e.pointerId); });
+  dv.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    var r = document.getElementById('main').getBoundingClientRect();
+    var h = Math.max(80, Math.min(r.height - 120, r.bottom - e.clientY));
+    document.getElementById('termPane').style.height = h + 'px';
+  });
+  function end() { if (drag) { drag = false; fitNow(); } }
+  dv.addEventListener('pointerup', end);
+  dv.addEventListener('pointercancel', end);
+  window.addEventListener('resize', function () { setTimeout(fitNow, 100); });
+})();
 
 require(['vs/editor/editor.main'], function () {
   var models = {}, current = null, saveTimer;
@@ -225,32 +305,63 @@ require(['vs/editor/editor.main'], function () {
     el.appendChild(add);
   }
 
-  var keys = [['Tab', '\t', 0], ['{ }', '{}', 1], ['[ ]', '[]', 1], ['( )', '()', 1],
-              ['" "', '""', 1], [';', ';', 0], ['Undo'], ['Redo']];
-  var kb = document.getElementById('keys');
-  keys.forEach(function (k) {
-    var b = document.createElement('button');
-    b.textContent = k[0];
-    b.onmousedown = function (e) { e.preventDefault(); };
-    b.onclick = function () {
-      if (!current) { toast('Open a file first'); return; }
-      editor.focus();
-      if (k[0] === 'Undo') editor.trigger('keys', 'undo', null);
-      else if (k[0] === 'Redo') editor.trigger('keys', 'redo', null);
-      else {
-        editor.trigger('keys', 'type', { text: k[1] });
-        if (k[2]) editor.trigger('keys', 'cursorLeft', null);
-      }
-    };
-    kb.appendChild(b);
-  });
+  var editorKeys = [['Tab', '\t', 0], ['{ }', '{}', 1], ['[ ]', '[]', 1], ['( )', '()', 1],
+                    ['" "', '""', 1], [';', ';', 0], ['Undo'], ['Redo']];
+  var termKeys = [['Esc', '\x1b'], ['Tab', '\t'], ['Ctrl-C', '\x03'], ['Ctrl-D', '\x04'],
+                  ['\u2191', '\x1b[A'], ['\u2193', '\x1b[B'], ['\u2190', '\x1b[D'], ['\u2192', '\x1b[C'],
+                  ['/', '/'], ['-', '-'], ['|', '|'], ['~', '~']];
+  var kb = document.getElementById('keys'), keyMode = '';
+
+  setKeys = function (mode) {
+    if (mode === keyMode) return;
+    keyMode = mode;
+    kb.innerHTML = '';
+    (mode === 'term' ? termKeys : editorKeys).forEach(function (k) {
+      var b = document.createElement('button');
+      b.textContent = k[0];
+      b.onmousedown = function (e) { e.preventDefault(); };
+      b.onclick = function () {
+        if (mode === 'term') {
+          if (!termStarted) { termStarted = true; Android.termStart(term.cols, term.rows); }
+          Android.termInput(b64enc(k[1]));
+          return;
+        }
+        if (!current) { toast('Open a file first'); return; }
+        editor.focus();
+        if (k[0] === 'Undo') editor.trigger('keys', 'undo', null);
+        else if (k[0] === 'Redo') editor.trigger('keys', 'redo', null);
+        else {
+          editor.trigger('keys', 'type', { text: k[1] });
+          if (k[2]) editor.trigger('keys', 'cursorLeft', null);
+        }
+      };
+      kb.appendChild(b);
+    });
+  };
+  setKeys('editor');
+  editor.onDidFocusEditorText(function () { setKeys('editor'); });
+
+  function runCurrent() {
+    if (!current) { toast('Open a file first'); return; }
+    saveNow();
+    var ext = current.split('.').pop().toLowerCase();
+    var runners = { py: 'python3', js: 'node', mjs: 'node', sh: 'bash' };
+    var r = runners[ext];
+    if (!r) { toast('No runner for .' + ext + ' yet'); return; }
+    var q = "'" + current.replace(/'/g, "'\\''") + "'";
+    showTerm(true);
+    setTimeout(function () {
+      Android.termInput(b64enc('cd /root/projects && ' + r + ' ' + q + '\r'));
+    }, 200);
+  }
 
   document.getElementById('nFiles').onclick = function () { showPanel('files'); };
-  document.getElementById('nEditor').onclick = function () { showPanel('editor'); };
-  document.getElementById('nTerm').onclick = function () { toast('Terminal arrives in phase 2'); };
+  document.getElementById('nEditor').onclick = function () { showPanel('editor'); editor.focus(); };
+  document.getElementById('nTerm').onclick = function () { showTerm(!termVisible); };
   document.getElementById('nGit').onclick = function () { toast('Git arrives in a later phase'); };
   document.getElementById('nSet').onclick = function () { toast('Settings arrive in a later phase'); };
-  document.getElementById('fab').onclick = function () { toast('Run arrives with the terminal in phase 2'); };
+  document.getElementById('fab').onclick = runCurrent;
+  document.getElementById('termPane').addEventListener('click', function () { if (term) term.focus(); });
 
   var existing = Android.list().split('\n').filter(Boolean);
   if (!existing.length) {
