@@ -5,28 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Stroid</title>
 <style>
-  :root { --bg:#1e1f22; --bar:#2b2d30; --line:#393b40; --fg:#dfe1e5; --mut:#8a8d93; --acc:#5b8def; }
-  * { box-sizing: border-box; }
+  :root { --bg:#1e1f22; --bar:#2b2d30; --line:#393b40; --fg:#dfe1e5; --mut:#8a8d93; --acc:#5b8def; --run:#3d8b5f; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
-    font-family: system-ui, sans-serif; overflow:hidden; }
+    font-family:ui-monospace, Menlo, monospace; overflow:hidden; }
   #app { display:flex; flex-direction:column; height:100%; }
-  #tabs { display:flex; background:var(--bar); border-bottom:1px solid var(--line); overflow-x:auto; flex:none; }
-  .tab { padding:10px 12px; font-size:13px; color:var(--mut); white-space:nowrap; border-top:2px solid transparent; }
+  #tabs { display:flex; align-items:stretch; background:var(--bar); border-bottom:1px solid var(--line);
+    overflow-x:auto; flex:none; font-size:12px; scrollbar-width:none; }
+  .tab { padding:10px 12px; color:var(--mut); white-space:nowrap; border-top:2px solid transparent; display:flex; gap:8px; align-items:center; }
   .tab.on { color:var(--fg); background:var(--bg); border-top-color:var(--acc); }
+  .tab i { font-style:normal; color:var(--mut); padding:0 2px; font-size:14px; }
+  .plus { margin-left:auto; padding:8px 14px; font-size:18px; color:var(--mut); }
   #main { flex:1; position:relative; min-height:0; }
   #editor { position:absolute; inset:0; }
-  #files { position:absolute; inset:0; background:var(--bg); overflow:auto; display:none; padding:8px; }
-  .row { display:flex; align-items:center; padding:12px; border-bottom:1px solid var(--line); font-size:14px; }
+  #files { position:absolute; inset:0; background:var(--bg); overflow:auto; display:none; z-index:5; }
+  .row { display:flex; align-items:center; padding:14px 12px; border-bottom:1px solid var(--line); font-size:14px; }
   .row span { flex:1; }
-  .row b { color:#e06c6c; font-weight:400; padding:0 8px; }
-  #keys { display:flex; gap:4px; padding:6px; background:var(--bar); border-top:1px solid var(--line); flex:none; }
-  #keys button { flex:1; padding:9px 0; font-size:14px; background:var(--line); color:var(--fg);
-    border:0; border-radius:4px; font-family:ui-monospace, monospace; }
-  #nav { display:flex; background:var(--bg); border-top:1px solid var(--line); flex:none;
-    padding-bottom: env(safe-area-inset-bottom, 0px); }
-  #nav button { flex:1; padding:12px 0; background:none; border:0; color:var(--mut); font-size:12px; }
+  .row b { color:#e06c6c; font-weight:400; padding:0 6px; font-size:13px; }
+  #fab { position:absolute; right:14px; bottom:14px; width:46px; height:46px; border-radius:50%;
+    background:var(--run); color:#fff; border:0; display:flex; align-items:center; justify-content:center; z-index:4; }
+  #status { position:absolute; left:10px; bottom:6px; font-size:11px; color:var(--mut); z-index:3; pointer-events:none; }
+  #keys { display:flex; gap:4px; padding:6px; background:var(--bar); border-top:1px solid var(--line); flex:none; overflow-x:auto; scrollbar-width:none; }
+  #keys button { flex:1 0 auto; min-width:40px; padding:9px 8px; font-size:14px; background:var(--line); color:var(--fg);
+    border:0; border-radius:4px; font-family:inherit; }
+  #nav { display:flex; background:var(--bg); border-top:1px solid var(--line); flex:none; padding-bottom:env(safe-area-inset-bottom, 0px); }
+  #nav button { flex:1; padding:8px 0 9px; background:none; border:0; color:var(--mut); font-size:10px; font-family:system-ui, sans-serif;
+    display:flex; flex-direction:column; align-items:center; gap:3px; }
   #nav button.on { color:var(--acc); }
-  #nav button:disabled { opacity:.4; }
+  svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  #fab svg { width:22px; height:22px; fill:#fff; stroke:#fff; }
+  #modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:20; padding:20px; }
+  #box { background:var(--bar); border:1px solid var(--line); border-radius:12px; padding:16px; width:100%; max-width:340px; font-family:system-ui, sans-serif; }
+  #box h3 { margin:0 0 12px; font-size:15px; font-weight:500; }
+  #box input { width:100%; padding:10px; font-size:15px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; font-family:ui-monospace, monospace; }
+  #btns { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+  #btns button { padding:9px 16px; font-size:14px; border-radius:6px; border:1px solid var(--line); background:none; color:var(--fg); }
+  #btns button.go { background:var(--acc); border-color:var(--acc); color:#fff; }
+  #btns button.bad { background:#c0504d; border-color:#c0504d; color:#fff; }
+  #toast { position:fixed; left:50%; bottom:110px; transform:translateX(-50%); background:#3a3b3f; color:var(--fg); padding:9px 14px;
+    border-radius:8px; font-size:13px; font-family:system-ui, sans-serif; display:none; z-index:30; max-width:90%; text-align:center; }
 </style>
 </head>
 <body>
@@ -34,16 +51,22 @@
   <div id="tabs"></div>
   <div id="main">
     <div id="editor"></div>
+    <div id="status"></div>
+    <button id="fab" aria-label="Run"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg></button>
     <div id="files"></div>
   </div>
   <div id="keys"></div>
   <div id="nav">
-    <button id="nFiles">Files</button>
-    <button id="nEditor" class="on">Editor</button>
-    <button id="nSave">Save</button>
-    <button disabled>Terminal</button>
+    <button id="nFiles"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Files</button>
+    <button id="nEditor" class="on"><svg viewBox="0 0 24 24"><path d="M8 8l-5 4 5 4M16 8l5 4-5 4M14 5l-4 14"/></svg>Editor</button>
+    <button id="nTerm"><svg viewBox="0 0 24 24"><path d="M5 7l5 5-5 5M12 19h7"/></svg>Terminal</button>
+    <button id="nGit"><svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 5-12 2-12 7"/></svg>Git</button>
+    <button id="nSet"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Settings</button>
   </div>
 </div>
+
+<div id="modal"><div id="box"><h3 id="mTitle"></h3><input id="mInput" autocapitalize="off" autocomplete="off" spellcheck="false"><div id="btns"><button id="mNo">Cancel</button><button id="mYes" class="go">OK</button></div></div></div>
+<div id="toast"></div>
 
 <script src="monaco/vs/loader.js"></script>
 <script>
@@ -56,13 +79,36 @@ self.MonacoEnvironment = {
 };
 require.config({ paths: { vs: 'monaco/vs' } });
 
+var toastTimer;
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.style.display = 'none'; }, 1800);
+}
+
+function dialog(title, withInput, value, yesLabel, danger, cb) {
+  var m = document.getElementById('modal'), inp = document.getElementById('mInput');
+  document.getElementById('mTitle').textContent = title;
+  inp.style.display = withInput ? 'block' : 'none';
+  inp.value = value || '';
+  var yes = document.getElementById('mYes');
+  yes.textContent = yesLabel; yes.className = danger ? 'bad' : 'go';
+  m.style.display = 'flex';
+  if (withInput) setTimeout(function () { inp.focus(); inp.select(); }, 50);
+  function close() { m.style.display = 'none'; yes.onclick = null; }
+  document.getElementById('mNo').onclick = close;
+  yes.onclick = function () { var v = inp.value; close(); cb(v); };
+}
+
 require(['vs/editor/editor.main'], function () {
-  var models = {};
-  var current = null;
+  var models = {}, current = null, saveTimer;
   var editor = monaco.editor.create(document.getElementById('editor'), {
     theme: 'vs-dark', automaticLayout: true, fontSize: 14, minimap: { enabled: false },
-    wordWrap: 'on', scrollBeyondLastLine: false
+    wordWrap: 'on', scrollBeyondLastLine: false, padding: { top: 8 }
   });
+
+  function setStatus(s) { document.getElementById('status').textContent = s; }
 
   function langFor(path) {
     var ext = '.' + path.split('.').pop().toLowerCase();
@@ -79,13 +125,20 @@ require(['vs/editor/editor.main'], function () {
     Object.keys(models).forEach(function (p) {
       var t = document.createElement('div');
       t.className = 'tab' + (p === current ? ' on' : '');
-      t.textContent = p.split('/').pop();
-      t.onclick = function () { openFile(p); };
-      t.oncontextmenu = function (e) { e.preventDefault(); closeTab(p); };
+      var n = document.createElement('span');
+      n.textContent = p.split('/').pop();
+      n.onclick = function () { openFile(p); };
+      t.appendChild(n);
+      if (p === current) {
+        var x = document.createElement('i');
+        x.textContent = '\u00d7';
+        x.onclick = function () { closeTab(p); };
+        t.appendChild(x);
+      }
       el.appendChild(t);
     });
     var plus = document.createElement('div');
-    plus.className = 'tab';
+    plus.className = 'plus';
     plus.textContent = '+';
     plus.onclick = newFile;
     el.appendChild(plus);
@@ -99,38 +152,49 @@ require(['vs/editor/editor.main'], function () {
   }
 
   function openFile(p) {
-    if (!models[p]) {
-      models[p] = monaco.editor.createModel(Android.read(p), langFor(p));
-    }
+    if (!models[p]) models[p] = monaco.editor.createModel(Android.read(p), langFor(p));
     current = p;
     editor.setModel(models[p]);
     renderTabs();
     showPanel('editor');
+    setStatus('');
   }
 
   function closeTab(p) {
     if (!models[p]) return;
+    saveNow(p);
     models[p].dispose();
     delete models[p];
     var left = Object.keys(models);
     if (current === p) {
       current = left.length ? left[0] : null;
-      if (current) editor.setModel(models[current]);
+      if (current) editor.setModel(models[current]); else editor.setModel(null);
     }
     renderTabs();
   }
 
   function newFile() {
-    var name = prompt('File name', 'new.py');
-    if (!name) return;
-    if (!Android.write(name, '')) { alert('Could not create file'); return; }
-    openFile(name);
+    dialog('New file', true, 'new.py', 'Create', false, function (name) {
+      name = (name || '').trim().replace(/^\/+/, '');
+      if (!name) { toast('Enter a file name'); return; }
+      if (!Android.write(name, '')) { toast('Could not create file'); return; }
+      if (models[name]) { models[name].setValue(''); }
+      openFile(name);
+      toast('Created ' + name);
+    });
   }
 
-  function save() {
-    if (!current) return;
-    if (!Android.write(current, models[current].getValue())) alert('Save failed');
+  function saveNow(p) {
+    p = p || current;
+    if (!p || !models[p]) return;
+    if (Android.write(p, models[p].getValue())) setStatus('Saved'); else toast('Save failed');
   }
+
+  editor.onDidChangeModelContent(function () {
+    setStatus('Editing...');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () { saveNow(); }, 600);
+  });
 
   function renderFiles() {
     var el = document.getElementById('files');
@@ -145,7 +209,11 @@ require(['vs/editor/editor.main'], function () {
       var d = document.createElement('b');
       d.textContent = 'Delete';
       d.onclick = function () {
-        if (confirm('Delete ' + p + '?')) { closeTab(p); Android.delete(p); renderFiles(); }
+        dialog('Delete ' + p + '?', false, '', 'Delete', true, function () {
+          if (models[p]) closeTab(p);
+          if (Android.delete(p)) toast('Deleted ' + p); else toast('Could not delete');
+          renderFiles();
+        });
       };
       r.appendChild(s); r.appendChild(d);
       el.appendChild(r);
@@ -157,25 +225,33 @@ require(['vs/editor/editor.main'], function () {
     el.appendChild(add);
   }
 
-  var keys = [['Tab', '  '], ['{', '{'], ['}', '}'], ['[', '['], [']', ']'],
-              ['(', '('], [')', ')'], [';', ';'], ['Undo', null], ['Redo', null]];
+  var keys = [['Tab', '\t', 0], ['{ }', '{}', 1], ['[ ]', '[]', 1], ['( )', '()', 1],
+              ['" "', '""', 1], [';', ';', 0], ['Undo'], ['Redo']];
   var kb = document.getElementById('keys');
   keys.forEach(function (k) {
     var b = document.createElement('button');
     b.textContent = k[0];
     b.onmousedown = function (e) { e.preventDefault(); };
+    b.ontouchstart = function (e) { e.preventDefault(); };
     b.onclick = function () {
+      if (!current) { toast('Open a file first'); return; }
       editor.focus();
       if (k[0] === 'Undo') editor.trigger('keys', 'undo', null);
       else if (k[0] === 'Redo') editor.trigger('keys', 'redo', null);
-      else editor.trigger('keys', 'type', { text: k[1] });
+      else {
+        editor.trigger('keys', 'type', { text: k[1] });
+        if (k[2]) editor.trigger('keys', 'cursorLeft', null);
+      }
     };
     kb.appendChild(b);
   });
 
   document.getElementById('nFiles').onclick = function () { showPanel('files'); };
   document.getElementById('nEditor').onclick = function () { showPanel('editor'); };
-  document.getElementById('nSave').onclick = save;
+  document.getElementById('nTerm').onclick = function () { toast('Terminal arrives in phase 2'); };
+  document.getElementById('nGit').onclick = function () { toast('Git arrives in a later phase'); };
+  document.getElementById('nSet').onclick = function () { toast('Settings arrive in a later phase'); };
+  document.getElementById('fab').onclick = function () { toast('Run arrives with the terminal in phase 2'); };
 
   var existing = Android.list().split('\n').filter(Boolean);
   if (!existing.length) {
