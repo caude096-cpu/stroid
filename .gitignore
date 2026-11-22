@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+node_modules/
+app/src/main/assets/monaco/
+*.iml
+.idea/
