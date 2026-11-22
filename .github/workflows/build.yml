@@ -951,6 +951,8 @@ jobs:
           sudo rm -rf fs/.dockerenv fs/dev/* fs/proc/* fs/sys/*
           sudo tar --hard-dereference --numeric-owner -C fs -czpf rootfs.tar.gz .
           sudo chown "$(id -u):$(id -g)" rootfs.tar.gz
+          sudo rm -rf fs rootfs.tar
+          docker rm -f stroid-rootfs >/dev/null 2>&1 || true
           ls -lh rootfs.tar.gz
 
       - name: Add rootfs to the app
